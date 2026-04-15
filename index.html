@@ -1,0 +1,624 @@
+<<<<<<< HEAD
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Data Cleaner Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: rgba(255,255,255,0.05);
+            --accent: #6366f1;
+            --accent2: #22c55e;
+            --text: #e5e7eb;
+        }
+
+        * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+
+        body {
+            margin: 0;
+            background: linear-gradient(135deg, #0f172a, #020617);
+            color: var(--text);
+        }
+
+        .container {
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--card);
+            backdrop-filter: blur(12px);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transition: transform 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        h2 { margin-top: 0; }
+
+        button {
+            background: linear-gradient(45deg, var(--accent), var(--accent2));
+            border: none;
+            padding: 10px 16px;
+            border-radius: 10px;
+            color: white;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+            opacity: 0.9;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            border-radius: 8px;
+            border: none;
+            margin-top: 8px;
+            background: #1e293b;
+            color: white;
+        }
+
+        label { display: block; margin-top: 10px; }
+
+        table {
+            width: auto;
+            min-width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        th, td {
+            padding: 6px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #020617;
+        }
+
+        .table-container {
+            width: 100%;
+            max-width: 100%;
+            max-height: 500px;
+            height: 500px;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="card">
+        <h2>⚡ Controls</h2>
+
+        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+            <input type="text" id="filePath" placeholder="No file selected" readonly style="flex: 1; padding: 10px; border-radius: 10px; border: none; background: #1e293b; color: white;" />
+            <button onclick="chooseFile()" style="padding: 10px 16px;">Choose File</button>
+        </div>
+        <button onclick="loadFile()">Load File</button>
+
+        <label><input type="checkbox" id="removeNulls"> Remove Nulls</label>
+        <label><input type="checkbox" id="dropDuplicates"> Drop Duplicates</label>
+
+        <label>Normalize Columns</label>
+        <input type="text" id="textCols" placeholder="col1,col2" />
+
+        <button onclick="cleanData()">Run Cleaning</button>
+        <button onclick="exportData()">Export</button>
+    </div>
+
+    <div class="card">
+        <h2>📊 Preview</h2>
+        <div class="table-container" id="tableContainer"></div>
+    </div>
+    
+    <div id="expiryBox" style="margin-top:10px; font-size:12px; color:#94a3b8;">
+    ⏳ File expires in: <span id="expiryTimer">--</span>
+    </div>
+
+</div>
+
+<script>
+const API_BASE = "http://127.0.0.1:5000";
+
+let selectedFilePath = null;     // pywebview desktop path
+let selectedFileObject = null;    // browser File object
+let currentFileId = null;        // browser uploaded file id
+let expiryInterval = null;
+
+function startExpiryTimer(expiryISO) {
+    const expiryTime = new Date(expiryISO).getTime();
+
+    if (expiryInterval) clearInterval(expiryInterval);
+
+    function update() {
+        const diff = expiryTime - Date.now();
+
+        if (diff <= 0) {
+            document.getElementById("expiryTimer").innerText = "Expired";
+            clearInterval(expiryInterval);
+            return;
+        }
+
+        const m = Math.floor(diff / 60000);
+        const s = Math.floor((diff % 60000) / 1000);
+
+        document.getElementById("expiryTimer").innerText = `${m}m ${s}s`;
+    }
+
+    update();
+    expiryInterval = setInterval(update, 1000);
+}
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function renderTable(data) {
+    if (!data || data.length === 0) return "No Data";
+
+    let table = "<table><thead><tr>";
+    Object.keys(data[0]).forEach(col => {
+        table += `<th>${escapeHtml(col)}</th>`;
+    });
+    table += "</tr></thead><tbody>";
+
+    data.forEach(row => {
+        table += "<tr>";
+        Object.keys(data[0]).forEach(col => {
+            table += `<td>${escapeHtml(row[col])}</td>`;
+        });
+        table += "</tr>";
+    });
+
+    table += "</tbody></table>";
+    return table;
+}
+
+function hasPyWebView() {
+    return !!(window.pywebview && window.pywebview.api);
+}
+
+async function getPyWebViewApi(timeoutMs = 1500) {
+    if (typeof window.pywebview === "undefined") return null;
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        if (window.pywebview && window.pywebview.api) {
+            return window.pywebview.api;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return null;
+}
+
+async function readJsonResponse(res) {
+    const text = await res.text();
+    try {
+        return JSON.parse(text);
+    } catch {
+        throw new Error(text);
+    }
+}
+
+async function chooseFile() {
+    try {
+        const api = await getPyWebViewApi();
+
+        if (api && typeof api.open_file_dialog === "function") {
+            const path = await api.open_file_dialog();
+            if (!path) return;
+
+            selectedFilePath = path;
+            selectedFileObject = null;
+            currentFileId = null;
+            document.getElementById("filePath").value = path;
+            return;
+        }
+
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".csv,.xlsx,.xls";
+
+        input.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            selectedFileObject = file;
+            selectedFilePath = null;
+            currentFileId = null;
+            document.getElementById("filePath").value = file.name;
+        };
+
+        input.click();
+    } catch (err) {
+        alert("Error selecting file: " + err);
+    }
+}
+
+async function loadFile() {
+    try {
+        const api = await getPyWebViewApi();
+
+        // Desktop mode
+        if (api && typeof selectedFilePath === "string") {
+            const result = await api.load_file(selectedFilePath);
+
+            if (result.error) {
+                alert(result.error);
+                return;
+            }
+
+            currentFileId = null;
+            document.getElementById("tableContainer").innerHTML = renderTable(result.preview);
+            return;
+        }
+
+        // Browser mode
+        if (!(selectedFileObject instanceof File)) {
+            alert("Select file first");
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", selectedFileObject);
+
+        const res = await fetch(`${API_BASE}/load-file`, {
+            method: "POST",
+            body: formData
+        });
+
+        const result = await readJsonResponse(res);
+
+        if (!res.ok || result.error) {
+            alert(result.error || "Upload failed");
+            return;
+        }
+
+        currentFileId = result.file_id;
+        document.getElementById("tableContainer").innerHTML = renderTable(result.preview);
+    } catch (err) {
+        alert("Error: " + err);
+    }
+}
+
+async function cleanData() {
+    try {
+        const config = {
+            remove_nulls: document.getElementById("removeNulls").checked,
+            drop_duplicates: document.getElementById("dropDuplicates").checked,
+            normalize_text: document.getElementById("textCols").value
+                .split(",")
+                .map(x => x.trim())
+                .filter(x => x)
+        };
+
+        const api = await getPyWebViewApi();
+
+        // Desktop mode
+        if (api && typeof selectedFilePath === "string") {
+            const result = await api.clean_data(JSON.stringify(config));
+
+            if (result.error) {
+                alert(result.error);
+                return;
+            }
+
+            document.getElementById("tableContainer").innerHTML = renderTable(result.preview);
+            return;
+        }
+
+        // Browser mode
+        if (!currentFileId) {
+            alert("Load file first");
+            return;
+        }
+
+        const res = await fetch(`${API_BASE}/clean-data`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                file_id: currentFileId,
+                config: config
+            })
+        });
+
+        const result = await readJsonResponse(res);
+
+        if (!res.ok || result.error) {
+            alert(result.error || "Cleaning failed");
+            return;
+        }
+
+        currentFileId = result.file_id;
+        document.getElementById("tableContainer").innerHTML = renderTable(result.preview);
+    } catch (err) {
+        alert("Error: " + err);
+    }
+}
+
+async function exportData() {
+    try {
+        const api = await getPyWebViewApi();
+
+        // Desktop mode
+        if (api && typeof selectedFilePath === "string") {
+            const path = await api.save_file_dialog("output.csv");
+            if (!path) return;
+
+            const result = await api.export_file(path);
+
+            if (result.error) {
+                alert(result.error);
+            } else {
+                alert("Export successful: " + path);
+            }
+            return;
+        }
+
+        // Browser mode
+        if (!currentFileId) {
+            alert("Load file first");
+            return;
+        }
+
+        window.open(`${API_BASE}/export-file/${currentFileId}`, "_blank");
+    } catch (err) {
+        alert("Error exporting file: " + err);
+    }
+}
+</script>
+</body>
+=======
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Data Cleaner Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: rgba(255,255,255,0.05);
+            --accent: #6366f1;
+            --accent2: #22c55e;
+            --text: #e5e7eb;
+        }
+
+        * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+
+        body {
+            margin: 0;
+            background: linear-gradient(135deg, #0f172a, #020617);
+            color: var(--text);
+        }
+
+        .container {
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--card);
+            backdrop-filter: blur(12px);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transition: transform 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        h2 { margin-top: 0; }
+
+        button {
+            background: linear-gradient(45deg, var(--accent), var(--accent2));
+            border: none;
+            padding: 10px 16px;
+            border-radius: 10px;
+            color: white;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+            opacity: 0.9;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            border-radius: 8px;
+            border: none;
+            margin-top: 8px;
+            background: #1e293b;
+            color: white;
+        }
+
+        label { display: block; margin-top: 10px; }
+
+        table {
+            width: auto;
+            min-width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        th, td {
+            padding: 6px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #020617;
+        }
+
+        .table-container {
+            width: 100%;
+            max-width: 100%;
+            max-height: 500px;
+            height: 500px;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="card">
+        <h2>⚡ Controls</h2>
+
+        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+            <input type="text" id="filePath" placeholder="No file selected" readonly style="flex: 1; padding: 10px; border-radius: 10px; border: none; background: #1e293b; color: white;" />
+            <button onclick="chooseFile()" style="padding: 10px 16px;">Choose File</button>
+        </div>
+        <button onclick="loadFile()">Load File</button>
+
+        <label><input type="checkbox" id="removeNulls"> Remove Nulls</label>
+        <label><input type="checkbox" id="dropDuplicates"> Drop Duplicates</label>
+
+        <label>Normalize Columns</label>
+        <input type="text" id="textCols" placeholder="col1,col2" />
+
+        <button onclick="cleanData()">Run Cleaning</button>
+        <button onclick="exportData()">Export</button>
+    </div>
+
+    <div class="card">
+        <h2>📊 Preview</h2>
+        <div class="table-container" id="tableContainer"></div>
+    </div>
+
+</div>
+
+<script>
+function renderTable(data) {
+    if (!data || data.length === 0) return "No Data";
+
+    let table = "<table><thead><tr>";
+    Object.keys(data[0]).forEach(col => {
+        table += `<th>${col}</th>`;
+    });
+    table += "</tr></thead><tbody>";
+
+    data.forEach(row => {
+        table += "<tr>";
+        Object.values(row).forEach(val => {
+            table += `<td>${val}</td>`;
+        });
+        table += "</tr>";
+    });
+
+    table += "</tbody></table>";
+    return table;
+}
+
+let selectedFilePath = null;
+
+async function chooseFile() {
+    try {
+        const path = await window.pywebview.api.open_file_dialog();
+        if (!path) {
+            return;
+        }
+
+        selectedFilePath = path;
+        document.getElementById('filePath').value = path;
+    } catch (err) {
+        alert("Error selecting file: " + err);
+    }
+}
+
+async function loadFile() {
+    try {
+        if (!selectedFilePath) {
+            alert("Select file first using Choose File");
+            return;
+        }
+
+        const result = await window.pywebview.api.load_file(selectedFilePath);
+
+        if (result.error) {
+            alert(result.error);
+            return;
+        }
+
+        document.getElementById('tableContainer').innerHTML = renderTable(result.preview);
+    } catch (err) {
+        alert("Error: " + err);
+    }
+}
+
+async function cleanData() {
+    const config = {
+        remove_nulls: document.getElementById('removeNulls').checked,
+        drop_duplicates: document.getElementById('dropDuplicates').checked,
+        normalize_text: document.getElementById('textCols').value.split(',').map(x => x.trim()).filter(x => x)
+    };
+
+    const result = await window.pywebview.api.clean_data(JSON.stringify(config));
+
+    if (result.error) {
+        alert(result.error);
+        return;
+    }
+
+    document.getElementById('tableContainer').innerHTML = renderTable(result.preview);
+}
+
+async function exportData() {
+    try {
+        const path = await window.pywebview.api.save_file_dialog('output.csv');
+        if (!path) {
+            return;
+        }
+
+        const result = await window.pywebview.api.export_file(path);
+        if (result.error) {
+            alert(result.error);
+        } else {
+            alert('Export successful: ' + path);
+        }
+    } catch (err) {
+        alert('Error exporting file: ' + err);
+    }
+}
+</script>
+
+</body>
+>>>>>>> d39e1ee2d53fd61856ade0091b3aefce56ab2e4c
+</html>
