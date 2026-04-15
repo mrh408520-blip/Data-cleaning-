@@ -131,99 +131,176 @@
 </div>
 
 <script>
+const API_BASE = "http://localhost:5000";
+
+// detect environment
+const isPyWebView = typeof window.pywebview !== "undefined";
+// ================= GLOBAL STATE (MUST BE FIRST) =================
+let selectedFilePath = null;
+let TABLE_COLUMNS = null;
+
+// ================= RENDER FUNCTION =================
 function renderTable(data) {
     if (!data || data.length === 0) return "No Data";
 
+    if (!TABLE_COLUMNS) {
+        TABLE_COLUMNS = Object.keys(data[0]);
+    }
+
     let table = "<table><thead><tr>";
-    Object.keys(data[0]).forEach(col => {
+
+    TABLE_COLUMNS.forEach(col => {
         table += `<th>${col}</th>`;
     });
+
     table += "</tr></thead><tbody>";
 
     data.forEach(row => {
         table += "<tr>";
-        Object.values(row).forEach(val => {
-            table += `<td>${val}</td>`;
+
+        TABLE_COLUMNS.forEach(col => {
+            table += `<td>${row[col] ?? ""}</td>`;
         });
+
         table += "</tr>";
     });
 
     table += "</tbody></table>";
+
     return table;
 }
-
-let selectedFilePath = null;
-
 async function chooseFile() {
-    try {
-        const path = await window.pywebview.api.open_file_dialog();
-        if (!path) {
-            return;
+
+    if (isPyWebView) {
+        // 🖥 Desktop mode
+        try {
+            const path = await window.pywebview.api.open_file_dialog();
+
+            if (!path) return;
+
+            selectedFilePath = path;
+            document.getElementById("filePath").value = path;
+
+        } catch (err) {
+            alert("PyWebView Error: " + err);
         }
 
-        selectedFilePath = path;
-        document.getElementById('filePath').value = path;
-    } catch (err) {
-        alert("Error selecting file: " + err);
+    } else {
+        // 🌐 Browser mode
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".csv,.xlsx,.xls";
+
+        input.onchange = (e) => {
+            selectedFile = e.target.files[0];
+            document.getElementById("filePath").value = selectedFile.name;
+        };
+
+        input.click();
     }
 }
 
 async function loadFile() {
+
     try {
-        if (!selectedFilePath) {
-            alert("Select file first using Choose File");
-            return;
+
+        if (isPyWebView) {
+
+            const result = await window.pywebview.api.load_file(selectedFilePath);
+
+            if (result.error) return alert(result.error);
+
+            document.getElementById("tableContainer").innerHTML =
+                renderTable(result.preview);
+
+        } else {
+
+            const formData = new FormData();
+            formData.append("file", selectedFile);
+
+            const res = await fetch(`${API_BASE}/upload`, {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await res.json();
+
+            if (data.error) return alert(data.error);
+
+            window.fileId = data.file_id;
+
+            document.getElementById("tableContainer").innerHTML =
+                renderTable(data.preview);
         }
 
-        const result = await window.pywebview.api.load_file(selectedFilePath);
-
-        if (result.error) {
-            alert(result.error);
-            return;
-        }
-
-        document.getElementById('tableContainer').innerHTML = renderTable(result.preview);
     } catch (err) {
-        alert("Error: " + err);
+        alert("Load error: " + err);
     }
 }
-
 async function cleanData() {
+
     const config = {
-        remove_nulls: document.getElementById('removeNulls').checked,
-        drop_duplicates: document.getElementById('dropDuplicates').checked,
-        normalize_text: document.getElementById('textCols').value.split(',').map(x => x.trim()).filter(x => x)
+        remove_nulls: document.getElementById("removeNulls").checked,
+        drop_duplicates: document.getElementById("dropDuplicates").checked,
+        normalize_text: document.getElementById("textCols")
+            .value.split(",").map(x => x.trim()).filter(Boolean)
     };
 
-    const result = await window.pywebview.api.clean_data(JSON.stringify(config));
-
-    if (result.error) {
-        alert(result.error);
-        return;
-    }
-
-    document.getElementById('tableContainer').innerHTML = renderTable(result.preview);
-}
-
-async function exportData() {
     try {
-        const path = await window.pywebview.api.save_file_dialog('output.csv');
-        if (!path) {
-            return;
+
+        if (isPyWebView) {
+
+            const result = await window.pywebview.api.clean_data(JSON.stringify(config));
+
+            if (result.error) return alert(result.error);
+
+            document.getElementById("tableContainer").innerHTML =
+                renderTable(result.preview);
+
+        } else {
+
+            const res = await fetch(`${API_BASE}/clean/${window.fileId}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(config)
+            });
+
+            const data = await res.json();
+
+            if (data.error) return alert(data.error);
+
+            window.fileId = data.file_id;
+
+            document.getElementById("tableContainer").innerHTML =
+                renderTable(data.preview);
         }
 
-        const result = await window.pywebview.api.export_file(path);
-        if (result.error) {
-            alert(result.error);
-        } else {
-            alert('Export successful: ' + path);
-        }
     } catch (err) {
-        alert('Error exporting file: ' + err);
+        alert("Clean error: " + err);
+    }
+}
+async function exportData() {
+
+    try {
+
+        if (isPyWebView) {
+
+            const path = await window.pywebview.api.save_file_dialog("output.csv");
+            if (!path) return;
+
+            await window.pywebview.api.export_file(path);
+            alert("Export successful");
+
+        } else {
+
+            window.open(`${API_BASE}/download/${window.fileId}`, "_blank");
+        }
+
+    } catch (err) {
+        alert("Export error: " + err);
     }
 }
 </script>
 
 </body>
-</html>
 </html>
